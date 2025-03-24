@@ -1,0 +1,233 @@
+import pandas as pd
+import numpy as np
+import matplotlib.pyplot as plt
+import seaborn as sns
+import re
+from scipy.stats import chi2_contingency  # 导入卡方检验函数
+#读取数据
+df = pd.read_csv('food_coded.csv')
+# 1. 处理GPA列的异常值和缺失值
+def clean_gpa(value):
+    try:
+        # 提取数字（处理类似"3.79 bitch"的情况）
+        return float(re.findall(r"\d+\.?\d*", str(value))[0])
+    except:
+        return np.nan
+
+df["GPA"] = df["GPA"].apply(clean_gpa).astype(float)
+df["GPA"].fillna(df["GPA"].mean(), inplace=True)  # 用平均值填充缺失值
+
+# 2. 处理卡路里列的异常值
+for col in ["calories_chicken", "calories_scone"]:
+    # 替换明显异常值（如980卡路里的司康饼）
+    df[col] = np.where(df[col] > 800, df[col].median(), df[col])
+
+# 3. 文本字段标准化
+def clean_text(text):
+    if pd.isna(text): 
+        return ""
+    text = str(text).lower()  # 统一小写
+    text = re.sub(r"[^\w\s,]", "", text)  # 去除非字母数字字符（保留逗号）
+    text = re.sub(r"\s+", " ", text).strip()  # 去除多余空格
+    # 修正常见拼写错误
+    replacements = {
+        "lazyniss": "laziness",
+        "stres": "stress",
+        "bordem": "boredom"
+    }
+    for wrong, right in replacements.items():
+        text = text.replace(wrong, right)
+    return text
+
+df["comfort_food"] = df["comfort_food"].apply(clean_text)
+df["comfort_food_reasons"] = df["comfort_food_reasons"].apply(clean_text)
+
+# 4. 处理缺失文本
+df["comfort_food"] = df["comfort_food"].replace("none", "")
+df["comfort_food_reasons"] = df["comfort_food_reasons"].replace("none", "")
+
+# 5. 标准化分类标签（情绪原因）
+def standardize_reasons(text):
+    keywords = {
+        "stress": ["stress", "stressed", "anxiety"],
+        "boredom": ["boredom", "bored", "lazy"],
+        "sadness": ["sadness", "sad", "depress"]
+    }
+    
+    found = []
+    for emotion, terms in keywords.items():
+        if any(term in text for term in terms):
+            found.append(emotion)
+    return ", ".join(found) if found else "other"
+
+df["standardized_reasons"] = df["comfort_food_reasons"].apply(standardize_reasons)
+
+# 6. 处理重复数据
+df = df.drop_duplicates()
+
+# ==================== 保存清洗后数据 ====================
+df.to_csv("cleaned_food_data.csv", index=False)
+
+# ==================== 验证清洗结果 ====================
+print("\n清洗后数据示例：")
+print(df.head(3))
+
+print("\n数据类型检查：")
+print(df.dtypes)
+
+print("\n缺失值统计：")
+print(df.isnull().sum())
+df.to_csv("cleaned_food_data.csv", index=False)  # 删除 index 避免多余列
+#编写热量词典
+calorie_category = {
+    # 高热量食物
+    "high": {
+        "pizza", "chocolate", "ice cream", "fries", "burger", "cake",
+        "chips", "brownies", "donuts", "cookies", "fried chicken", "wings",
+        "fast food", "cheeseburgers", "pretzels", "soda", "milkshake"
+    },
+    # 中热量食物
+    "medium": {
+        "pasta", "mac and cheese", "soup", "lasagna", "pot pie", "noodles",
+        "sandwich", "grilled chicken", "stuffed peppers", "rice", "curry"
+    },
+    # 低热量食物
+    "low": {
+        "salad", "fruit", "vegetables", "grapes", "carrots", "broccoli",
+        "sushi", "quinoa", "spaghetti squash", "plantain chips", "almonds"
+    }
+}
+#根据词典进行分类
+def classify_calories(food_list):
+    categories = set()
+    if isinstance(food_list, str):
+        foods = [food.strip() for food in food_list.split(",")]  # 统一小写
+    else:
+        return "unknown"  # 处理空值或非字符串
+    
+    for food in foods:
+        found = False
+        # 检查是否在预定义分类中
+        for category, items in calorie_category.items():
+            if food in items:
+                categories.add(category)
+                found = True
+                break
+        if not found:
+            categories.add("unknown")  # 未匹配的食物
+    
+    # 确定最终分类（优先取最高热量）
+    if "high" in categories:
+        return "high"
+    elif "medium" in categories:
+        return "medium"
+    elif "low" in categories:
+        return "low"
+    else:
+        return "unknown"
+df["comfort_food_calories"]=df["comfort_food"].apply(classify_calories)
+print("\n热量分类统计：")
+print(df["comfort_food_calories"].value_counts())
+# 定义GPA分箱边界和标签
+gpa_bins = [0, 2.0, 3.0, 3.5, 4.0]
+gpa_labels = ["Very Low", "Low", "Medium", "High"]
+
+# 定义卡路里分箱边界和标签（按数据分布自定义）
+calories_bins = {
+    "calories_chicken": [0, 300, 500, 800],
+    "calories_scone": [0, 300, 500, 800]
+}
+calories_labels = ["Low", "Medium", "High"]
+
+# ==================== 执行分箱操作 ====================
+# 对GPA列分箱
+df["GPA_category"] = pd.cut(
+    df["GPA"],
+    bins=gpa_bins,
+    labels=gpa_labels,
+    include_lowest=True
+)
+
+# 对calories_chicken分箱
+df["calories_chicken_category"] = pd.cut(
+    df["calories_chicken"],
+    bins=calories_bins["calories_chicken"],
+    labels=calories_labels,
+    include_lowest=True
+)
+
+# 对calories_scone分箱
+df["calories_scone_category"] = pd.cut(
+    df["calories_scone"],
+    bins=calories_bins["calories_scone"],
+    labels=calories_labels,
+    include_lowest=True
+)
+
+# ==================== 验证结果 ====================
+print("\nGPA分布统计：")
+print(df["GPA_category"].value_counts())
+print("\n鸡肉卡路里估值分布统计：")
+print(df["calories_chicken_category"].value_counts())
+# GPA与鸡肉卡路里估值
+cross_gpa_chicken = pd.crosstab(
+    df["GPA_category"], 
+    df["calories_chicken_category"],
+    margins=True,
+    margins_name="Total"
+)
+
+# 可视化堆叠柱状图
+sns.set(style="whitegrid")
+plt.figure(figsize=(10, 6))
+sns.heatmap(cross_gpa_chicken.iloc[:-1, :-1], annot=True, fmt="d", cmap="Blues")
+plt.title("GPA vs 鸡肉卡路里分类分布")
+plt.show()
+
+# 卡方检验
+chi2, p, dof, expected = chi2_contingency(cross_gpa_chicken.iloc[:-1, :-1])
+print(f"卡方值: {chi2:.2f}, p值: {p:.4f}")
+# GPA与舒适食物热量分类
+cross_gpa_comfort = pd.crosstab(
+    df["GPA_category"], 
+    df["comfort_food_calories"],
+    margins=True,
+    margins_name="Total"
+)
+
+# 可视化堆叠柱状图
+plt.figure(figsize=(10, 6))
+sns.heatmap(cross_gpa_comfort.iloc[:-1, :-1], annot=True, fmt="d", cmap="Reds")
+plt.title("GPA vs 舒适食物热量分类分布")
+plt.show()
+
+# 卡方检验
+chi2, p, dof, expected = chi2_contingency(cross_gpa_comfort.iloc[:-1, :-1])
+print(f"卡方值: {chi2:.2f}, p值: {p:.4f}")
+# 鸡肉卡路里分类与舒适食物热量分类
+cross_chicken_comfort = pd.crosstab(
+    df["calories_chicken_category"], 
+    df["comfort_food_calories"],
+    margins=True,
+    margins_name="Total"
+)
+
+# 可视化热力图
+plt.figure(figsize=(10, 6))
+sns.heatmap(cross_chicken_comfort.iloc[:-1, :-1], annot=True, fmt="d", cmap="Greens")
+plt.title("鸡肉卡路里分类 vs 舒适食物热量分类分布")
+plt.show()
+
+# 卡方检验
+chi2, p, dof, expected = chi2_contingency(cross_chicken_comfort.iloc[:-1, :-1])
+print(f"卡方值: {chi2:.2f}, p值: {p:.4f}")
+def cramers_v(confusion_matrix):
+    chi2 = chi2_contingency(confusion_matrix)[0]
+    n = confusion_matrix.sum().sum()
+    phi2 = chi2 / n
+    r, k = confusion_matrix.shape
+    return np.sqrt(phi2 / min((k-1), (r-1)))
+
+# 示例：GPA 与舒适食物热量分类的关联强度
+cramer_v = cramers_v(cross_gpa_comfort.iloc[:-1, :-1])
+print(f"Cramer's V 系数: {cramer_v:.3f}")
